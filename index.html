@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>🐶 강아지 러너</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body {
+    width:100%; height:100%;
+    background:#fff8e7;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    font-family:'Arial Rounded MT Bold', Arial, sans-serif;
+    overflow:hidden; touch-action:none;
+    user-select:none; -webkit-user-select:none;
+  }
+  #ui {
+    width:100%; max-width:480px;
+    display:flex; flex-direction:column;
+    align-items:center; gap:8px;
+    padding: 0 12px;
+  }
+  h1 { color:#e67e22; font-size:1.3rem; letter-spacing:2px; }
+  #scoreBoard { display:flex; gap:12px; }
+  .score-box {
+    background:#fff; border:3px solid #f5c842;
+    border-radius:12px; padding:3px 14px;
+    color:#e67e22; font-size:0.9rem; font-weight:bold;
+  }
+  #gameCanvas {
+    border:4px solid #f5c842; border-radius:18px;
+    background:#fffbe8; display:block;
+    box-shadow:0 4px 20px #f5c84266;
+    width:100%; max-width:480px;
+    touch-action:none;
+  }
+  #msg {
+    font-size:0.85rem; color:#c0730a;
+    height:20px; letter-spacing:1px; text-align:center;
+  }
+  #tapBtn {
+    width:100%; max-width:480px;
+    padding: 18px 0;
+    background: linear-gradient(135deg, #f5c842, #e8a020);
+    border: none; border-radius: 18px;
+    font-size: 1.2rem; font-weight: bold;
+    color: #fff; letter-spacing: 2px;
+    box-shadow: 0 4px 14px #f5c84288;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #tapBtn:active { transform: scale(0.97); }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>🐶 강아지 러너</h1>
+  <div id="scoreBoard">
+    <div class="score-box">점수: <span id="score">0</span></div>
+    <div class="score-box">속도: <span id="speedDisplay">1.0</span>x</div>
+    <div class="score-box">최고: <span id="best">0</span></div>
+  </div>
+  <canvas id="gameCanvas"></canvas>
+  <div id="msg">버튼을 눌러 시작!</div>
+  <button id="tapBtn">🐾 점프!</button>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const speedEl = document.getElementById('speedDisplay');
+const msgEl = document.getElementById('msg');
+const tapBtn = document.getElementById('tapBtn');
+
+// ---- Responsive canvas size ----
+function resizeCanvas() {
+  const maxW = Math.min(window.innerWidth - 24, 480);
+  canvas.width = maxW;
+  canvas.height = Math.round(maxW * 0.42);
+  GROUND_Y = canvas.height - Math.round(canvas.height * 0.18);
+  if (state !== 'running') drawStaticFrame();
+}
+
+let GROUND_Y = 0;
+let state = 'idle';
+let score = 0, best = 0, frame = 0;
+let baseSpeed, speedMult;
+let spawnTimer, spawnInterval;
+let obstacles = [], bones = [];
+let dustParticles = [];
+let boostFlash = 0;
+let groundOffset = 0;
+
+const DOG = { x:0, y:0, w:0, h:0, vy:0, onGround:true, jumpPower:-12, gravity:0.65 };
+
+function initDog() {
+  const sc = canvas.width / 480;
+  DOG.w = Math.round(48*sc);
+  DOG.h = Math.round(48*sc);
+  DOG.x = Math.round(80*sc);
+}
+
+function reset() {
+  initDog();
+  DOG.y = GROUND_Y - DOG.h;
+  DOG.vy = 0; DOG.onGround = true;
+  obstacles = []; bones = []; dustParticles = [];
+  score = 0; frame = 0;
+  baseSpeed = canvas.width * 0.0085;
+  speedMult = 1.0;
+  spawnTimer = 0; spawnInterval = 90;
+  boostFlash = 0; groundOffset = 0;
+  speedEl.textContent = '1.0';
+}
+
+function jump() {
+  if (state === 'idle' || state === 'dead') {
+    reset(); state = 'running'; msgEl.textContent = ''; return;
+  }
+  if (DOG.onGround) { DOG.vy = DOG.jumpPower; DOG.onGround = false; }
+}
+
+tapBtn.addEventListener('touchstart', e => { e.preventDefault(); jump(); }, {passive:false});
+tapBtn.addEventListener('click', e => { e.preventDefault(); jump(); });
+document.addEventListener('keydown', e => { if(e.code==='Space'){e.preventDefault();jump();} });
+
+// ---- Draw Dog ----
+function drawDog(x, y, f, onGround) {
+  const sc = canvas.width / 480;
+  ctx.save();
+
+  // Tail
+  const tw = Math.sin(f*0.28)*22;
+  ctx.strokeStyle='#c97840'; ctx.lineWidth=Math.max(3,4*sc); ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(x+4*sc, y+18*sc);
+  ctx.quadraticCurveTo(x-8*sc, y+8*sc, x-4*sc+Math.cos(tw*Math.PI/180)*9*sc, y+Math.sin(tw*Math.PI/180)*9*sc-5*sc);
+  ctx.stroke();
+
+  // Body
+  ctx.fillStyle='#e8a060';
+  rr(x+2*sc, y+13*sc, 42*sc, 22*sc, 9*sc); ctx.fill();
+
+  // Head
+  ctx.fillStyle='#e8a060';
+  rr(x+16*sc, y+2*sc, 30*sc, 24*sc, 10*sc); ctx.fill();
+
+  // Ears
+  const ef = Math.sin(f*0.28)*(onGround?3:-3);
+  ctx.fillStyle='#c97840';
+  ctx.beginPath(); ctx.ellipse(x+20*sc, y+(9+ef)*sc, 5.5*sc, 9*sc, -0.25, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x+42*sc, y+(9+ef)*sc, 5.5*sc, 9*sc, 0.25, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#f0a070';
+  ctx.beginPath(); ctx.ellipse(x+20*sc, y+(11+ef)*sc, 3*sc, 6*sc, -0.25, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x+42*sc, y+(11+ef)*sc, 3*sc, 6*sc, 0.25, 0, Math.PI*2); ctx.fill();
+
+  // Eyes
+  ctx.fillStyle='#2a1a0a';
+  ctx.beginPath(); ctx.ellipse(x+26*sc, y+12*sc, 3*sc, 3.5*sc, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x+38*sc, y+12*sc, 3*sc, 3.5*sc, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.ellipse(x+27.5*sc, y+10.5*sc, 1.2*sc, 1.2*sc, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x+39.5*sc, y+10.5*sc, 1.2*sc, 1.2*sc, 0, 0, Math.PI*2); ctx.fill();
+
+  // Nose
+  ctx.fillStyle='#1a0a00';
+  rr(x+28*sc, y+18*sc, 8*sc, 5*sc, 3*sc); ctx.fill();
+
+  // Mouth
+  ctx.strokeStyle='#1a0a00'; ctx.lineWidth=1.5*sc;
+  ctx.beginPath(); ctx.moveTo(x+32*sc,y+23*sc); ctx.lineTo(x+29*sc,y+26*sc); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+32*sc,y+23*sc); ctx.lineTo(x+35*sc,y+26*sc); ctx.stroke();
+
+  // Short stubby legs
+  const legA = onGround && Math.sin(f*0.3)>0;
+  const lift = 3*sc, legW=7*sc, legH=9*sc;
+  const legY = y+35*sc;
+  const lxs=[x+22*sc, x+30*sc, x+6*sc, x+13*sc];
+  const lifts=[legA?0:lift, legA?lift:0, legA?lift:0, legA?0:lift];
+  for(let i=0;i<4;i++){
+    const ly=legY-lifts[i];
+    ctx.fillStyle='#d4854a';
+    rr(lxs[i], ly, legW, legH, 2.5*sc); ctx.fill();
+    ctx.fillStyle='#c07038';
+    rr(lxs[i]-sc, ly+legH-2.5*sc, legW+2*sc, 4.5*sc, 2.5*sc); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---- Draw Box ----
+function drawBox(o) {
+  const sc = canvas.width/480;
+  ctx.fillStyle='rgba(0,0,0,0.08)';
+  ctx.beginPath(); ctx.ellipse(o.x+o.w/2, GROUND_Y+3, o.w/2, 3.5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#8B6914';
+  rr(o.x,o.y,o.w,o.h,3.5*sc); ctx.fill();
+  ctx.fillStyle='#b08828';
+  rr(o.x+2.5*sc,o.y+2.5*sc,o.w-5*sc,o.h-5*sc,2.5*sc); ctx.fill();
+  ctx.strokeStyle='#6b4f10'; ctx.lineWidth=2*sc;
+  ctx.beginPath(); ctx.moveTo(o.x,o.y+o.h/2); ctx.lineTo(o.x+o.w,o.y+o.h/2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(o.x+o.w/2,o.y); ctx.lineTo(o.x+o.w/2,o.y+o.h); ctx.stroke();
+  ctx.fillStyle='#5a3e0a';
+  ctx.font=`bold ${o.h*0.45}px Arial`;
+  ctx.textAlign='center'; ctx.fillText('!',o.x+o.w/2,o.y+o.h*0.7); ctx.textAlign='left';
+}
+
+// ---- Draw Bone ----
+function drawBone(b) {
+  const sc = canvas.width/480;
+  const bob = Math.sin(frame*0.1+b.offset)*2.5;
+  ctx.save(); ctx.translate(b.x, b.y+bob);
+  ctx.shadowColor='#ffe066'; ctx.shadowBlur=10;
+  ctx.fillStyle='#fffadc'; ctx.strokeStyle='#c8a800'; ctx.lineWidth=1.2*sc;
+  rr(-11*sc,-3.5*sc,22*sc,7*sc,2.5*sc); ctx.fill(); ctx.stroke();
+  [[-13*sc,-6.5*sc],[-13*sc,3*sc],[8*sc,-6.5*sc],[8*sc,3*sc]].forEach(([kx,ky])=>{
+    ctx.beginPath(); ctx.ellipse(kx,ky,4.8*sc,4.3*sc,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+  });
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+// ---- Dust ----
+function spawnDust(){
+  if(frame%4!==0)return;
+  const sc=canvas.width/480;
+  dustParticles.push({x:DOG.x+8*sc+Math.random()*10*sc,y:GROUND_Y,vx:-(Math.random()*1.5+0.5),vy:-(Math.random()*1.5+0.5),life:16,maxLife:16,r:Math.random()*3+1.5});
+}
+function updateDust(){dustParticles.forEach(d=>{d.x+=d.vx;d.y+=d.vy;d.vy+=0.12;d.life--;});dustParticles=dustParticles.filter(d=>d.life>0);}
+function drawDust(){
+  dustParticles.forEach(d=>{ctx.globalAlpha=d.life/d.maxLife*0.4;ctx.fillStyle='#c49035';ctx.beginPath();ctx.arc(d.x,d.y,d.r,0,Math.PI*2);ctx.fill();});
+  ctx.globalAlpha=1;
+}
+
+// ---- Ground & BG ----
+function drawGround(){
+  ctx.fillStyle='#d4a84b'; ctx.fillRect(0,GROUND_Y,canvas.width,4);
+  ctx.fillStyle='#b8902a';
+  for(let i=-40;i<canvas.width+40;i+=40) ctx.fillRect(i-groundOffset,GROUND_Y+4,20,3);
+  ctx.fillStyle='#6db83a';
+  for(let i=0;i<canvas.width;i+=50){
+    const gx=((i-groundOffset*0.8)%canvas.width+canvas.width)%canvas.width;
+    ctx.beginPath();ctx.moveTo(gx,GROUND_Y);ctx.lineTo(gx+4,GROUND_Y-7);ctx.lineTo(gx+8,GROUND_Y);ctx.fill();
+    ctx.beginPath();ctx.moveTo(gx+10,GROUND_Y);ctx.lineTo(gx+13,GROUND_Y-5);ctx.lineTo(gx+16,GROUND_Y);ctx.fill();
+  }
+}
+
+let clouds=[{x:80,y:0,s:1},{x:250,y:0,s:0.75},{x:420,y:0,s:1.0},{x:580,y:0,s:0.85}];
+function initClouds(){clouds.forEach((c,i)=>{c.x=(canvas.width/(clouds.length))*(i+0.5);c.y=10+Math.random()*(GROUND_Y*0.35);});}
+function drawBG(){
+  const grad=ctx.createLinearGradient(0,0,0,GROUND_Y);
+  grad.addColorStop(0,'#fffbe8');grad.addColorStop(1,'#fff3c0');
+  ctx.fillStyle=grad;ctx.fillRect(0,0,canvas.width,GROUND_Y);
+  const sc=canvas.width/480;
+  ctx.fillStyle='#ffd700';ctx.shadowColor='#ffd700';ctx.shadowBlur=14;
+  ctx.beginPath();ctx.arc(canvas.width-40*sc,28*sc,17*sc,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+  clouds.forEach(c=>{
+    ctx.globalAlpha=0.7;ctx.fillStyle='#fffde0';
+    const s=c.s*sc*0.9;
+    ctx.beginPath();ctx.ellipse(c.x,c.y,30*s,13*s,0,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(c.x-17*s,c.y+4*s,16*s,10*s,0,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(c.x+17*s,c.y+4*s,18*s,10*s,0,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=1;
+    if(state==='running')c.x-=baseSpeed*speedMult*0.2*c.s;
+    if(c.x<-80*sc)c.x=canvas.width+80*sc;
+  });
+}
+
+function rr(x,y,w,h,r){
+  ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
+}
+
+function collides(ax,ay,aw,ah,bx,by,bw,bh,pad=6){
+  return ax+pad<bx+bw-pad&&ax+aw-pad>bx+pad&&ay+pad<by+bh-pad&&ay+ah-pad>by+pad;
+}
+
+function spawnPair(){
+  const sc=canvas.width/480;
+  const h=(28+Math.random()*22|0)*sc;
+  const w=(26+Math.random()*14|0)*sc;
+  obstacles.push({x:canvas.width+10,w,h,y:GROUND_Y-h});
+  if(Math.random()<0.55){
+    const gap=(120+Math.random()*80|0)*sc;
+    const yOpts=[GROUND_Y-16*sc, GROUND_Y-55*sc, GROUND_Y-85*sc];
+    const by=yOpts[Math.floor(Math.random()*yOpts.length)];
+    bones.push({x:canvas.width+10+gap, y:by, offset:Math.random()*Math.PI*2});
+  }
+}
+
+function drawBoostFlash(){
+  if(boostFlash<=0)return;
+  ctx.globalAlpha=boostFlash/20*0.28;ctx.fillStyle='#ffe033';
+  ctx.fillRect(0,0,canvas.width,canvas.height);ctx.globalAlpha=1;
+}
+
+function drawOverlay(title,sub){
+  ctx.fillStyle='rgba(255,240,180,0.75)';ctx.fillRect(0,0,canvas.width,canvas.height);
+  const sc=canvas.width/480;
+  ctx.fillStyle='#b85a00';ctx.font=`bold ${22*sc}px Arial Rounded MT Bold,Arial`;
+  ctx.textAlign='center';ctx.fillText(title,canvas.width/2,canvas.height/2-14*sc);
+  ctx.font=`${13*sc}px Arial`;ctx.fillStyle='#7a3800';
+  ctx.fillText(sub,canvas.width/2,canvas.height/2+14*sc);ctx.textAlign='left';
+}
+
+function drawStaticFrame(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  drawBG(); drawGround();
+  drawDog(DOG.x||80*(canvas.width/480), GROUND_Y-DOG.h||GROUND_Y-48*(canvas.width/480), 0, true);
+  if(state==='idle') drawOverlay('🐶 강아지 러너','버튼을 눌러 시작!');
+  if(state==='dead') drawOverlay('😢 게임 오버!','버튼을 눌러 다시 시작');
+}
+
+function loop(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  drawBG();
+
+  if(state==='idle'){
+    initDog(); drawGround();
+    drawDog(DOG.x,GROUND_Y-DOG.h,frame,true);
+    drawOverlay('🐶 강아지 러너','버튼을 눌러 시작!');
+    frame++; requestAnimationFrame(loop); return;
+  }
+
+  const spd=baseSpeed*speedMult;
+
+  if(state==='running'){
+    frame++; score++;
+    scoreEl.textContent=score;
+    if(score>best){best=score;bestEl.textContent=best;}
+    baseSpeed=canvas.width*0.0085+score/7000;
+    groundOffset=(groundOffset+spd)%40;
+
+    spawnTimer++;
+    if(spawnTimer>=spawnInterval){spawnPair();spawnTimer=0;spawnInterval=60+(Math.random()*55|0);}
+
+    DOG.vy+=DOG.gravity; DOG.y+=DOG.vy;
+    if(DOG.y>=GROUND_Y-DOG.h){DOG.y=GROUND_Y-DOG.h;DOG.vy=0;DOG.onGround=true;}
+
+    if(DOG.onGround)spawnDust();
+    updateDust();
+
+    obstacles.forEach(o=>o.x-=spd);
+    obstacles=obstacles.filter(o=>o.x>-80);
+    bones.forEach(b=>b.x-=spd);
+    bones=bones.filter(b=>b.x>-60);
+
+    bones=bones.filter(b=>{
+      const sc=canvas.width/480;
+      if(collides(DOG.x,DOG.y,DOG.w,DOG.h,b.x-11*sc,b.y-7*sc,22*sc,14*sc,4)){
+        speedMult=Math.min(speedMult+0.3,3.0);
+        speedEl.textContent=speedMult.toFixed(1);
+        boostFlash=20;return false;
+      }
+      return true;
+    });
+
+    if(boostFlash>0)boostFlash--;
+    if(frame%200===0&&speedMult>1.0){speedMult=Math.max(1.0,speedMult-0.05);speedEl.textContent=speedMult.toFixed(1);}
+
+    for(const o of obstacles){
+      if(collides(DOG.x,DOG.y,DOG.w,DOG.h,o.x,o.y,o.w,o.h)){
+        state='dead';msgEl.textContent='😢 다시 도전해봐!';break;
+      }
+    }
+  }
+
+  drawDust();
+  bones.forEach(b=>drawBone(b));
+  obstacles.forEach(o=>drawBox(o));
+  drawDog(DOG.x,DOG.y,frame,DOG.onGround);
+  drawBoostFlash();
+  drawGround();
+
+  if(state==='dead')drawOverlay('😢 게임 오버!','버튼을 눌러 다시 시작');
+  requestAnimationFrame(loop);
+}
+
+// Init
+resizeCanvas();
+initClouds();
+reset();
+window.addEventListener('resize', ()=>{ resizeCanvas(); initClouds(); if(state!=='running'){reset();} });
+loop();
+</script>
+</body>
+</html>
